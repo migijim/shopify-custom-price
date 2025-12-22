@@ -16,9 +16,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing parameters" });
     }
 
-    /* -----------------------------
+    /* --------------------------------
        1. Read base price (GraphQL)
-    ----------------------------- */
+    -------------------------------- */
     const gqlResp = await fetch(
       `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
       {
@@ -54,11 +54,49 @@ export default async function handler(req, res) {
     const meters = Number(dimensionMm) / 1000;
     const unitPrice = Math.round(pricePerMeter * meters * 100) / 100;
 
-    /* -----------------------------
-       2. Create variant (REST)
-    ----------------------------- */
+    /* --------------------------------
+       2. Get product options (REST)
+    -------------------------------- */
     const numericProductId = productId.split("/").pop();
 
+    const productResp = await fetch(
+      `https://${SHOP}/admin/api/${API_VERSION}/products/${numericProductId}.json`,
+      {
+        headers: {
+          "X-Shopify-Access-Token": TOKEN
+        }
+      }
+    );
+
+    const productJson = await productResp.json();
+    let optionName = "Size";
+
+    if (productJson.product.options.length === 1 &&
+        productJson.product.options[0].name === "Title") {
+      // Product has Default Title only → replace option
+      await fetch(
+        `https://${SHOP}/admin/api/${API_VERSION}/products/${numericProductId}.json`,
+        {
+          method: "PUT",
+          headers: {
+            "X-Shopify-Access-Token": TOKEN,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            product: {
+              id: numericProductId,
+              options: [{ name: optionName }]
+            }
+          })
+        }
+      );
+    } else {
+      optionName = productJson.product.options[0].name;
+    }
+
+    /* --------------------------------
+       3. Create variant (REST)
+    -------------------------------- */
     const createVariantResp = await fetch(
       `https://${SHOP}/admin/api/${API_VERSION}/products/${numericProductId}/variants.json`,
       {
@@ -69,7 +107,7 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           variant: {
-            title: `${dimensionMm}mm`,
+            option1: `${dimensionMm}mm`,
             price: unitPrice,
             inventory_management: "shopify",
             inventory_policy: "continue"
@@ -87,9 +125,9 @@ export default async function handler(req, res) {
 
     const variant = createVariantJson.variant;
 
-    /* -----------------------------
-       3. Set inventory = 0
-    ----------------------------- */
+    /* --------------------------------
+       4. Set inventory = 0
+    -------------------------------- */
     const locationsResp = await fetch(
       `https://${SHOP}/admin/api/${API_VERSION}/locations.json`,
       {
@@ -118,9 +156,9 @@ export default async function handler(req, res) {
       }
     );
 
-    /* -----------------------------
-       4. Success
-    ----------------------------- */
+    /* --------------------------------
+       5. Success
+    -------------------------------- */
     res.status(200).json({
       success: true,
       variantId: variant.id,
