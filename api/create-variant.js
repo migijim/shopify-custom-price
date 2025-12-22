@@ -2,9 +2,12 @@ import fetch from "node-fetch";
 
 const SHOP = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
-const API_VERSION = "2024-04";
+const API_VERSION = "2024-01";
 
-const shopifyFetch = async (query, variables = {}) => {
+async function shopifyFetch(label, query, variables = {}) {
+  console.log(`\n🔹 SHOPIFY CALL: ${label}`);
+  console.log("Variables:", JSON.stringify(variables));
+
   const res = await fetch(
     `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
     {
@@ -18,9 +21,14 @@ const shopifyFetch = async (query, variables = {}) => {
   );
 
   const json = await res.json();
-  if (json.errors) throw json.errors;
+  console.log(`Response (${label}):`, JSON.stringify(json));
+
+  if (json.errors) {
+    throw new Error(JSON.stringify(json.errors));
+  }
+
   return json.data;
-};
+}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -29,15 +37,19 @@ export default async function handler(req, res) {
 
   try {
     const { productId, dimensionMm } = req.body;
+    console.log("Incoming body:", req.body);
 
     if (!productId || !dimensionMm) {
       return res.status(400).json({ error: "Missing parameters" });
     }
 
-    /* 1. Get base price */
-    const productData = await shopifyFetch(`
+    /* 1️⃣ Read base product price */
+    const productData = await shopifyFetch(
+      "READ_PRODUCT",
+      `
       query ($id: ID!) {
         product(id: $id) {
+          status
           variants(first: 1) {
             edges {
               node {
@@ -47,18 +59,30 @@ export default async function handler(req, res) {
           }
         }
       }
-    `, { id: productId });
+      `,
+      { id: productId }
+    );
+
+    if (productData.product.status !== "ACTIVE") {
+      throw new Error("Product is not ACTIVE");
+    }
 
     const pricePerMeter = parseFloat(
       productData.product.variants.edges[0].node.price
     );
 
-    /* 2. Calculate price */
+    console.log("Price per meter:", pricePerMeter);
+
+    /* 2️⃣ Calculate unit price */
     const meters = dimensionMm / 1000;
     const unitPrice = Math.round(pricePerMeter * meters * 100) / 100;
 
-    /* 3. Create variant */
-    const createVariant = await shopifyFetch(`
+    console.log("Calculated unit price:", unitPrice);
+
+    /* 3️⃣ Create variant */
+    const createVariantData = await shopifyFetch(
+      "CREATE_VARIANT",
+      `
       mutation ($input: ProductVariantInput!) {
         productVariantCreate(input: $input) {
           productVariant {
@@ -73,42 +97,57 @@ export default async function handler(req, res) {
           }
         }
       }
-    `, {
-      input: {
-        productId,
-        title: `${dimensionMm}mm`,
-        price: unitPrice.toString(),
-        inventoryPolicy: "CONTINUE",
-        inventoryManagement: "SHOPIFY"
+      `,
+      {
+        input: {
+          productId,
+          title: `${dimensionMm}mm`,
+          price: unitPrice.toString(),
+          inventoryPolicy: "CONTINUE",
+          inventoryManagement: "SHOPIFY"
+        }
       }
-    });
+    );
 
-    const errors = createVariant.productVariantCreate.userErrors;
-    if (errors.length) {
-      return res.status(400).json({ errors });
+    const userErrors =
+      createVariantData.productVariantCreate.userErrors;
+
+    if (userErrors.length) {
+      console.error("Variant userErrors:", userErrors);
+      return res.status(400).json({ userErrors });
     }
 
     const variant =
-      createVariant.productVariantCreate.productVariant;
+      createVariantData.productVariantCreate.productVariant;
 
-    /* 4. Get primary location */
-    const locationData = await shopifyFetch(`
+    console.log("Created variant ID:", variant.id);
+
+    /* 4️⃣ Fetch location */
+    const locationData = await shopifyFetch(
+      "FETCH_LOCATION",
+      `
       query {
         locations(first: 1) {
           edges {
             node {
               id
+              name
             }
           }
         }
       }
-    `);
+      `
+    );
 
     const locationId =
       locationData.locations.edges[0].node.id;
 
-    /* 5. Set inventory to 0 at location */
-    await shopifyFetch(`
+    console.log("Using location:", locationId);
+
+    /* 5️⃣ Set inventory to 0 */
+    await shopifyFetch(
+      "SET_INVENTORY",
+      `
       mutation ($inventoryItemId: ID!, $locationId: ID!) {
         inventoryAdjustQuantity(
           input: {
@@ -122,19 +161,26 @@ export default async function handler(req, res) {
           }
         }
       }
-    `, {
-      inventoryItemId: variant.inventoryItem.id,
-      locationId
-    });
+      `,
+      {
+        inventoryItemId: variant.inventoryItem.id,
+        locationId
+      }
+    );
+
+    console.log("Inventory set to 0");
 
     res.status(200).json({
+      success: true,
       variantId: variant.id,
-      price: unitPrice,
-      dimensionMm
+      unitPrice
     });
 
   } catch (err) {
-    console.error("SHOPIFY ERROR:", err);
-    res.status(500).json({ error: "Variant creation failed" });
+    console.error("❌ STEP 3 FAILED:", err.message);
+    res.status(500).json({
+      error: "Variant creation failed",
+      details: err.message
+    });
   }
 }
