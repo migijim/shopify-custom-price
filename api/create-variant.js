@@ -138,23 +138,30 @@ export default async function handler(req, res) {
     );
 
     const locationsJson = await locationsResp.json();
-    const locationId = locationsJson.locations[0].id;
+    const locations = locationsJson.locations || [];
 
-    await fetch(
-      `https://${SHOP}/admin/api/${API_VERSION}/inventory_levels/set.json`,
-      {
-        method: "POST",
-        headers: {
-          "X-Shopify-Access-Token": TOKEN,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          location_id: locationId,
-          inventory_item_id: variant.inventory_item_id,
-          available: 0
-        })
-      }
-    );
+    if (locations.length > 0) {
+      const locationId = locations[0].id;
+
+      await fetch(
+        `https://${SHOP}/admin/api/${API_VERSION}/inventory_levels/set.json`,
+        {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": TOKEN,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            location_id: locationId,
+            inventory_item_id: variant.inventory_item_id,
+            available: 0
+          })
+        }
+      );
+    } else {
+      console.warn("⚠️ No inventory locations found. Skipping inventory set.");
+    }
+
 
     /* --------------------------------
        5. Success
