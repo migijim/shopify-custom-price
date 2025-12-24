@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { productId, dimensionMm } = req.body;
+    const { productId, dimensionMm, dimensionLang } = req.body;
 
     if (!productId || !dimensionMm) {
       return res.status(400).json({ error: "Missing parameters" });
@@ -107,7 +107,7 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           variant: {
-            option1: `${dimensionMm}mm`,
+            option1: `Temp | ${dimensionLang} | ${dimensionMm}mm`,
             price: unitPrice,
             inventory_management: "shopify",
             inventory_policy: "continue"
