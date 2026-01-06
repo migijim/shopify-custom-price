@@ -107,7 +107,7 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           variant: {
-            option1: `Temp | ${dimensionLang} | ${dimensionMm}mm`,
+            option1: `${dimensionLang} | ${dimensionMm} mm`,
             price: unitPrice,
             inventory_management: "shopify",
             inventory_policy: "continue"
