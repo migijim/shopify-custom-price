@@ -69,7 +69,7 @@ export default async function handler(req, res) {
     );
 
     const productJson = await productResp.json();
-    let optionName = "Size";
+    let optionName = "Dimensions";
 
     if (productJson.product.options.length === 1 &&
         productJson.product.options[0].name === "Title") {
