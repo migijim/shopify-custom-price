@@ -64,7 +64,7 @@ export default async function handler(req, res) {
     for (const item of order.line_items) {
       const hasDimension =
         item.properties &&
-        item.properties.some(p => p.name === "Dimension");
+        item.properties.some(p => p.name === "Dimensions");
 
       if (!hasDimension) continue;
 
