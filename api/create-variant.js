@@ -95,6 +95,25 @@ export default async function handler(req, res) {
     }
 
     /* --------------------------------
+       2.5. Check if variant already exists
+    -------------------------------- */
+    const variantOptionValue = `${dimensionLang} | ${dimensionMm} mm`;
+    const existingVariant = productJson.product.variants.find(
+      (v) => v.option1 === variantOptionValue
+    );
+
+    if (existingVariant) {
+      console.log("Variant already exists:", existingVariant.id);
+      return res.status(200).json({
+        success: true,
+        variantId: existingVariant.id,
+        price: existingVariant.price,
+        dimensionMm,
+        isExisting: true
+      });
+    }
+
+    /* --------------------------------
        3. Create variant (REST)
     -------------------------------- */
     const createVariantResp = await fetch(
@@ -107,7 +126,7 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           variant: {
-            option1: `${dimensionLang} | ${dimensionMm} mm`,
+            option1: variantOptionValue,
             price: unitPrice,
             inventory_management: "shopify",
             inventory_policy: "continue"
