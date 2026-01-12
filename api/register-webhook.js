@@ -4,7 +4,7 @@ const SHOP = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const API_VERSION = "2024-04";
 
-async function shopifyFetch(query, variables = {}) {
+async function shopifyFetch(query) {
   const res = await fetch(
     `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
     {
@@ -13,7 +13,7 @@ async function shopifyFetch(query, variables = {}) {
         "X-Shopify-Access-Token": TOKEN,
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({ query, variables })
+      body: JSON.stringify({ query })
     }
   );
 
@@ -24,8 +24,7 @@ async function shopifyFetch(query, variables = {}) {
 
 export default async function handler(req, res) {
   try {
-    const data = await shopifyFetch(
-      `
+    const data = await shopifyFetch(`
       mutation {
         webhookSubscriptionCreate(
           topic: ORDERS_PAID
@@ -36,14 +35,14 @@ export default async function handler(req, res) {
         ) {
           webhookSubscription {
             id
+            topic
           }
           userErrors {
             message
           }
         }
       }
-      `
-    );
+    `);
 
     res.json(data);
   } catch (err) {
