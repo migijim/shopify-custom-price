@@ -59,25 +59,6 @@ async function shopifyFetch(query, variables = {}) {
 /* -------------------------------------------------
    Get primary location ID
 -------------------------------------------------- */
-// async function getPrimaryLocationId() {
-//   const data = await shopifyFetch(`
-//     query {
-//       locations(first: 1) {
-//         edges {
-//           node {
-//             id
-//             name
-//           }
-//         }
-//       }
-//     }
-//   `);
-
-//   const location = data.locations.edges[0].node;
-//   console.log("📍 Using location:", location.name, location.id);
-//   return location.id;
-// }
-
 async function getPrimaryLocationId() {
   const data = await shopifyFetch(`
     query {
