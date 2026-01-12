@@ -7,7 +7,7 @@ const WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET;
 const API_VERSION = "2024-04";
 
 /* -------------------------------------------------
-   IMPORTANT: Disable body parser for raw body
+   Disable body parser (required for webhooks)
 -------------------------------------------------- */
 export const config = {
   api: {
@@ -47,8 +47,35 @@ async function shopifyFetch(query, variables = {}) {
   );
 
   const json = await res.json();
-  if (json.errors) throw json.errors;
+
+  if (json.errors) {
+    console.error("❌ Shopify GraphQL errors:", json.errors);
+    throw json.errors;
+  }
+
   return json.data;
+}
+
+/* -------------------------------------------------
+   Get primary location ID
+-------------------------------------------------- */
+async function getPrimaryLocationId() {
+  const data = await shopifyFetch(`
+    query {
+      locations(first: 1) {
+        edges {
+          node {
+            id
+            name
+          }
+        }
+      }
+    }
+  `);
+
+  const location = data.locations.edges[0].node;
+  console.log("📍 Using location:", location.name, location.id);
+  return location.id;
 }
 
 /* -------------------------------------------------
@@ -64,88 +91,120 @@ export default async function handler(req, res) {
   });
 
   req.on("end", async () => {
-    const shopifyHmac = req.headers["x-shopify-hmac-sha256"];
+    try {
+      const shopifyHmac = req.headers["x-shopify-hmac-sha256"];
 
-    if (!verifyWebhook(rawBody, shopifyHmac)) {
-      console.error("❌ Webhook HMAC verification failed");
-      return res.status(401).send("Unauthorized");
-    }
-
-    console.log("✅ Webhook verified");
-
-    const order = JSON.parse(rawBody);
-    console.log("🧾 Order ID:", order.id);
-
-    for (const item of order.line_items) {
-      const hasDimension =
-        item.properties &&
-        item.properties.some(p => p.name === "Individuelle Breite" || p.name === "Individuelle Länge");
-
-      if (!hasDimension) {
-        console.log("⏭ Skipped non-dimension item:", item.id);
-        continue;
+      if (!verifyWebhook(rawBody, shopifyHmac)) {
+        console.error("❌ Webhook HMAC verification failed");
+        return res.status(401).send("Unauthorized");
       }
 
-      const quantity = item.quantity;
-      console.log(
-        `📦 Processing item ${item.id} | product ${item.product_id} | qty ${quantity}`
-      );
+      console.log("✅ Webhook verified");
 
-      /* -----------------------------------------
-         Reduce ORIGINAL product inventory only
-         (temporary variant is auto-reduced by Shopify)
-      ------------------------------------------ */
-      const productData = await shopifyFetch(
-        `
-        query ($id: ID!) {
-          product(id: $id) {
-            variants(first: 1) {
-              edges {
-                node {
-                  inventoryItem {
-                    id
+      const order = JSON.parse(rawBody);
+      console.log("🧾 Order ID:", order.id);
+
+      const locationId = await getPrimaryLocationId();
+
+      for (const item of order.line_items) {
+        const hasDimension =
+          Array.isArray(item.properties) &&
+          item.properties.some(
+            p =>
+              p.name === "Individuelle Breite" ||
+              p.name === "Individuelle Länge"
+          );
+
+        if (!hasDimension) {
+          console.log("⏭ Skipped non-dimension item:", item.id);
+          continue;
+        }
+
+        const quantity = item.quantity;
+
+        console.log(
+          `📦 Processing item ${item.id} | product ${item.product_id} | qty ${quantity}`
+        );
+
+        /* -----------------------------------------
+           Fetch ORIGINAL product inventory item
+        ------------------------------------------ */
+        const productData = await shopifyFetch(
+          `
+          query ($id: ID!) {
+            product(id: $id) {
+              variants(first: 1) {
+                edges {
+                  node {
+                    inventoryItem {
+                      id
+                    }
                   }
                 }
               }
             }
           }
-        }
-        `,
-        {
-          id: `gid://shopify/Product/${item.product_id}`
-        }
-      );
+          `,
+          {
+            id: `gid://shopify/Product/${item.product_id}`
+          }
+        );
 
-      const originalInventoryItemId =
-        productData.product.variants.edges[0].node.inventoryItem.id;
+        const originalInventoryItemId =
+          productData.product.variants.edges[0].node.inventoryItem.id;
 
-      console.log(
-        `📉 Reducing original inventory item ${originalInventoryItemId} by ${quantity}`
-      );
+        console.log(
+          `📉 Reducing original inventory ${originalInventoryItemId} by ${quantity}`
+        );
 
-      await shopifyFetch(
-        `
-        mutation ($id: ID!, $delta: Int!) {
-          inventoryAdjustQuantity(
-            input: {
-              inventoryItemId: $id
-              availableDelta: $delta
-            }
-          ) {
-            inventoryLevel {
-              available
+        /* -----------------------------------------
+           Adjust inventory (SAFE API)
+        ------------------------------------------ */
+        const result = await shopifyFetch(
+          `
+          mutation ($input: InventoryAdjustQuantitiesInput!) {
+            inventoryAdjustQuantities(input: $input) {
+              inventoryAdjustmentGroup {
+                createdAt
+              }
+              userErrors {
+                field
+                message
+              }
             }
           }
-        }
-        `,
-        {
-          id: originalInventoryItemId,
-          delta: -quantity
-        }
-      );
-    }
+          `,
+          {
+            input: {
+              reason: "correction",
+              name: "available",
+              changes: [
+                {
+                  inventoryItemId: originalInventoryItemId,
+                  locationId,
+                  delta: -quantity
+                }
+              ]
+            }
+          }
+        );
 
-    console.log("✅ Order paid webhook completed");
-    res.status(200).send("OK");
+        const errors =
+          result.inventoryAdjustQuantities.userErrors;
+
+        if (errors.length > 0) {
+          console.error("❌ Inventory errors:", errors);
+          throw new Error("Inventory update failed");
+        }
+
+        console.log("✅ Inventory reduced successfully");
+      }
+
+      console.log("✅ Order paid webhook completed");
+      res.status(200).send("OK");
+    } catch (err) {
+      console.error("🔥 Webhook failure:", err);
+      res.status(500).send("Internal Server Error");
+    }
   });
 }
