@@ -79,7 +79,7 @@ export default async function handler(req, res) {
     for (const item of order.line_items) {
       const hasDimension =
         item.properties &&
-        item.properties.some(p => p.name === "Dimensions");
+        item.properties.some(p => p.name === "Individuelle Breite" || p.name === "Individuelle Länge");
 
       if (!hasDimension) {
         console.log("⏭ Skipped non-dimension item:", item.id);
