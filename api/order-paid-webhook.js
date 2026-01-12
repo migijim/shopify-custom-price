@@ -6,23 +6,33 @@ const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET;
 const API_VERSION = "2024-04";
 
-/* ------------------------------
-   Verify Shopify webhook
-------------------------------- */
-function verifyWebhook(req, rawBody) {
-  const hmac = req.headers["x-shopify-hmac-sha256"];
+/* -------------------------------------------------
+   IMPORTANT: Disable body parser for raw body
+-------------------------------------------------- */
+export const config = {
+  api: {
+    bodyParser: false
+  }
+};
 
+/* -------------------------------------------------
+   Verify Shopify webhook HMAC
+-------------------------------------------------- */
+function verifyWebhook(rawBody, shopifyHmac) {
   const digest = crypto
     .createHmac("sha256", WEBHOOK_SECRET)
     .update(rawBody, "utf8")
     .digest("base64");
 
-  return digest === hmac;
+  console.log("🔐 Shopify HMAC:", shopifyHmac);
+  console.log("🔐 Calculated HMAC:", digest);
+
+  return digest === shopifyHmac;
 }
 
-/* ------------------------------
+/* -------------------------------------------------
    Shopify GraphQL helper
-------------------------------- */
+-------------------------------------------------- */
 async function shopifyFetch(query, variables = {}) {
   const res = await fetch(
     `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
@@ -41,13 +51,12 @@ async function shopifyFetch(query, variables = {}) {
   return json.data;
 }
 
-export const config = {
-  api: {
-    bodyParser: false
-  }
-};
-
+/* -------------------------------------------------
+   Webhook handler
+-------------------------------------------------- */
 export default async function handler(req, res) {
+  console.log("➡️ Order paid webhook received");
+
   let rawBody = "";
 
   req.on("data", chunk => {
@@ -55,48 +64,37 @@ export default async function handler(req, res) {
   });
 
   req.on("end", async () => {
-    if (!verifyWebhook(req, rawBody)) {
-      return res.status(401).send("Invalid webhook");
+    const shopifyHmac = req.headers["x-shopify-hmac-sha256"];
+
+    if (!verifyWebhook(rawBody, shopifyHmac)) {
+      console.error("❌ Webhook HMAC verification failed");
+      return res.status(401).send("Unauthorized");
     }
 
+    console.log("✅ Webhook verified");
+
     const order = JSON.parse(rawBody);
+    console.log("🧾 Order ID:", order.id);
 
     for (const item of order.line_items) {
       const hasDimension =
         item.properties &&
         item.properties.some(p => p.name === "Dimensions");
 
-      if (!hasDimension) continue;
+      if (!hasDimension) {
+        console.log("⏭ Skipped non-dimension item:", item.id);
+        continue;
+      }
 
       const quantity = item.quantity;
-
-      /* -----------------------------------
-         1. Reduce TEMP VARIANT inventory
-      ------------------------------------ */
-      await shopifyFetch(
-        `
-        mutation ($id: ID!, $delta: Int!) {
-          inventoryAdjustQuantity(
-            input: {
-              inventoryItemId: $id
-              availableDelta: $delta
-            }
-          ) {
-            inventoryLevel {
-              available
-            }
-          }
-        }
-        `,
-        {
-          id: `gid://shopify/InventoryItem/${item.inventory_item_id}`,
-          delta: -quantity
-        }
+      console.log(
+        `📦 Processing item ${item.id} | product ${item.product_id} | qty ${quantity}`
       );
 
-      /* -----------------------------------
-         2. Reduce ORIGINAL PRODUCT inventory
-      ------------------------------------ */
+      /* -----------------------------------------
+         Reduce ORIGINAL product inventory only
+         (temporary variant is auto-reduced by Shopify)
+      ------------------------------------------ */
       const productData = await shopifyFetch(
         `
         query ($id: ID!) {
@@ -121,6 +119,10 @@ export default async function handler(req, res) {
       const originalInventoryItemId =
         productData.product.variants.edges[0].node.inventoryItem.id;
 
+      console.log(
+        `📉 Reducing original inventory item ${originalInventoryItemId} by ${quantity}`
+      );
+
       await shopifyFetch(
         `
         mutation ($id: ID!, $delta: Int!) {
@@ -143,6 +145,7 @@ export default async function handler(req, res) {
       );
     }
 
+    console.log("✅ Order paid webhook completed");
     res.status(200).send("OK");
   });
 }
