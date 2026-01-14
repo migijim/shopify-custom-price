@@ -89,9 +89,7 @@ async function cleanupProductVariants(product) {
     `
     mutation ($productId: ID!, $variantsIds: [ID!]!) {
       productVariantsBulkDelete(productId: $productId, variantsIds: $variantsIds) {
-        productVariants {
-          id
-        }
+        deletedProductVariantIds
         userErrors {
           field
           message
@@ -110,7 +108,7 @@ async function cleanupProductVariants(product) {
 
   console.log(
     "✅ Deleted variants:",
-    result.productVariantsBulkDelete.productVariants.length
+    result.productVariantsBulkDelete.deletedProductVariantIds.length
   );
 }
 
