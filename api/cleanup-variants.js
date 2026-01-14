@@ -156,10 +156,36 @@ async function cleanupProductVariants(product) {
   //   result.productVariantBulkDelete.deletedProductVariantIds
   // );
 
+  // const result = await shopifyFetch(
+  //   `
+  //   mutation ($variantIds: [ID!]!) {
+  //     productVariantsDelete(variantIds: $variantIds) {
+  //       deletedProductVariantIds
+  //       userErrors {
+  //         field
+  //         message
+  //       }
+  //     }
+  //   }
+  //   `,
+  //   { variantIds: idsToDelete }
+  // );
+
+  // const errors = result.productVariantsDelete.userErrors;
+  // if (errors.length > 0) {
+  //   console.error("❌ Bulk delete errors:", errors);
+  //   throw new Error("Bulk variant delete failed");
+  // }
+
+  // console.log(
+  //   "✅ Deleted variants:",
+  //   result.productVariantsDelete.deletedProductVariantIds
+  // );
+
   const result = await shopifyFetch(
     `
     mutation ($variantIds: [ID!]!) {
-      productVariantsDelete(variantIds: $variantIds) {
+      productVariantsBulkDelete(variantIds: $variantIds) {
         deletedProductVariantIds
         userErrors {
           field
@@ -171,7 +197,7 @@ async function cleanupProductVariants(product) {
     { variantIds: idsToDelete }
   );
 
-  const errors = result.productVariantsDelete.userErrors;
+  const errors = result.productVariantsBulkDelete.userErrors;
   if (errors.length > 0) {
     console.error("❌ Bulk delete errors:", errors);
     throw new Error("Bulk variant delete failed");
@@ -179,7 +205,7 @@ async function cleanupProductVariants(product) {
 
   console.log(
     "✅ Deleted variants:",
-    result.productVariantsDelete.deletedProductVariantIds
+    result.productVariantsBulkDelete.deletedProductVariantIds
   );
 }
 
