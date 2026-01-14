@@ -2,7 +2,7 @@ import fetch from "node-fetch";
 
 const SHOP = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
-const API_VERSION = "2024-04";
+const API_VERSION = "2025-01";
 
 const MAX_VARIANTS = Number(process.env.TEMP_VARIANT_MAX_COUNT || 100);
 const BUFFER_MINUTES = Number(process.env.TEMP_VARIANT_BUFFER_MINUTES || 120);
