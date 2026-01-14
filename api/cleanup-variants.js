@@ -52,52 +52,6 @@ function isOlderThanBuffer(createdAt) {
 /* -------------------------------------------------
    Cleanup logic
 -------------------------------------------------- */
-// async function cleanupProductVariants(product) {
-//   const tempVariants = product.variants.edges
-//     .map(e => e.node)
-//     .filter(v => isTemporaryVariant(v.title));
-
-//   if (tempVariants.length <= MAX_VARIANTS) {
-//     return;
-//   }
-
-//   console.log(
-//     `🧹 Product ${product.id}: ${tempVariants.length} temporary variants`
-//   );
-
-//   const deletable = tempVariants
-//     .filter(v => isOlderThanBuffer(v.createdAt))
-//     .sort(
-//       (a, b) =>
-//         new Date(a.createdAt) - new Date(b.createdAt)
-//     );
-
-//   const excessCount =
-//     tempVariants.length - MAX_VARIANTS;
-
-//   const toDelete = deletable.slice(0, excessCount);
-
-//   for (const variant of toDelete) {
-//     console.log(
-//       `🗑 Deleting variant ${variant.id} (${variant.title})`
-//     );
-
-//     await shopifyFetch(
-//       `
-//       mutation ($id: ID!) {
-//         productVariantDelete(id: $id) {
-//           deletedProductVariantId
-//           userErrors {
-//             message
-//           }
-//         }
-//       }
-//       `,
-//       { id: variant.id }
-//     );
-//   }
-// }
-
 async function cleanupProductVariants(product) {
   const tempVariants = product.variants.edges
     .map(e => e.node)
@@ -126,67 +80,17 @@ async function cleanupProductVariants(product) {
     return;
   }
 
-  const idsToDelete = toDelete.map(v => v.id);
+  const variantsIds = toDelete.map(v => v.id);
 
-  console.log(`🗑 Deleting ${idsToDelete.length} variants:`, idsToDelete);
-
-  // const result = await shopifyFetch(
-  //   `
-  //   mutation ($ids: [ID!]!) {
-  //     productVariantBulkDelete(ids: $ids) {
-  //       deletedProductVariantIds
-  //       userErrors {
-  //         field
-  //         message
-  //       }
-  //     }
-  //   }
-  //   `,
-  //   { ids: idsToDelete }
-  // );
-
-  // const errors = result.productVariantBulkDelete.userErrors;
-  // if (errors.length > 0) {
-  //   console.error("❌ Bulk delete errors:", errors);
-  //   throw new Error("Bulk variant delete failed");
-  // }
-
-  // console.log(
-  //   "✅ Deleted variants:",
-  //   result.productVariantBulkDelete.deletedProductVariantIds
-  // );
-
-  // const result = await shopifyFetch(
-  //   `
-  //   mutation ($variantIds: [ID!]!) {
-  //     productVariantsDelete(variantIds: $variantIds) {
-  //       deletedProductVariantIds
-  //       userErrors {
-  //         field
-  //         message
-  //       }
-  //     }
-  //   }
-  //   `,
-  //   { variantIds: idsToDelete }
-  // );
-
-  // const errors = result.productVariantsDelete.userErrors;
-  // if (errors.length > 0) {
-  //   console.error("❌ Bulk delete errors:", errors);
-  //   throw new Error("Bulk variant delete failed");
-  // }
-
-  // console.log(
-  //   "✅ Deleted variants:",
-  //   result.productVariantsDelete.deletedProductVariantIds
-  // );
+  console.log(`🗑 Deleting ${variantsIds.length} variants:`, variantsIds);
 
   const result = await shopifyFetch(
     `
-    mutation ($variantIds: [ID!]!) {
-      productVariantsBulkDelete(variantIds: $variantIds) {
-        deletedProductVariantIds
+    mutation ($productId: ID!, $variantsIds: [ID!]!) {
+      productVariantsBulkDelete(productId: $productId, variantsIds: $variantsIds) {
+        productVariants {
+          id
+        }
         userErrors {
           field
           message
@@ -194,7 +98,7 @@ async function cleanupProductVariants(product) {
       }
     }
     `,
-    { variantIds: idsToDelete }
+    { productId: product.id, variantsIds }
   );
 
   const errors = result.productVariantsBulkDelete.userErrors;
@@ -205,7 +109,7 @@ async function cleanupProductVariants(product) {
 
   console.log(
     "✅ Deleted variants:",
-    result.productVariantsBulkDelete.deletedProductVariantIds
+    result.productVariantsBulkDelete.productVariants.length
   );
 }
 
