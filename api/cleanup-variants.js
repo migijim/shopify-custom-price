@@ -7,9 +7,9 @@ const API_VERSION = "2024-04";
 const MAX_VARIANTS = Number(process.env.TEMP_VARIANT_MAX_COUNT || 100);
 const BUFFER_MINUTES = Number(process.env.TEMP_VARIANT_BUFFER_MINUTES || 120);
 
-/* -------------------------------
+/* -------------------------------------------------
    Shopify GraphQL helper
--------------------------------- */
+-------------------------------------------------- */
 async function shopifyFetch(query, variables = {}) {
   const res = await fetch(
     `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
@@ -33,11 +33,14 @@ async function shopifyFetch(query, variables = {}) {
   return json.data;
 }
 
-/* -------------------------------
+/* -------------------------------------------------
    Helpers
--------------------------------- */
+-------------------------------------------------- */
 function isTemporaryVariant(title) {
-  return title.startsWith("Length |") || title.startsWith("Width |");
+  return (
+    title.startsWith("Length |") ||
+    title.startsWith("Width |")
+  );
 }
 
 function isOlderThanBuffer(createdAt) {
@@ -46,10 +49,10 @@ function isOlderThanBuffer(createdAt) {
   return Date.now() - createdTime > bufferMs;
 }
 
-/* -------------------------------
-   Cleanup logic per product
--------------------------------- */
-async function cleanupProduct(product) {
+/* -------------------------------------------------
+   Cleanup logic
+-------------------------------------------------- */
+async function cleanupProductVariants(product) {
   const tempVariants = product.variants.edges
     .map(e => e.node)
     .filter(v => isTemporaryVariant(v.title));
@@ -59,7 +62,7 @@ async function cleanupProduct(product) {
   }
 
   console.log(
-    `🧹 Product ${product.id} has ${tempVariants.length} temporary variants`
+    `🧹 Product ${product.id}: ${tempVariants.length} temporary variants`
   );
 
   const deletable = tempVariants
@@ -69,11 +72,15 @@ async function cleanupProduct(product) {
         new Date(a.createdAt) - new Date(b.createdAt)
     );
 
-  const excessCount = tempVariants.length - MAX_VARIANTS;
+  const excessCount =
+    tempVariants.length - MAX_VARIANTS;
+
   const toDelete = deletable.slice(0, excessCount);
 
   for (const variant of toDelete) {
-    console.log(`🗑 Deleting ${variant.title} (${variant.id})`);
+    console.log(
+      `🗑 Deleting variant ${variant.id} (${variant.title})`
+    );
 
     await shopifyFetch(
       `
@@ -91,15 +98,15 @@ async function cleanupProduct(product) {
   }
 }
 
-/* -------------------------------
-   Cron entrypoint
--------------------------------- */
-export async function GET() {
+/* -------------------------------------------------
+   Cron handler
+-------------------------------------------------- */
+export default async function handler(req, res) {
   console.log("⏱ Variant cleanup job started");
 
   try {
-    let cursor = null;
     let hasNextPage = true;
+    let cursor = null;
 
     while (hasNextPage) {
       const data = await shopifyFetch(
@@ -107,7 +114,6 @@ export async function GET() {
         query ($cursor: String) {
           products(first: 20, after: $cursor) {
             edges {
-              cursor
               node {
                 id
                 variants(first: 250) {
@@ -120,6 +126,7 @@ export async function GET() {
                   }
                 }
               }
+              cursor
             }
             pageInfo {
               hasNextPage
@@ -131,18 +138,18 @@ export async function GET() {
       );
 
       for (const edge of data.products.edges) {
-        await cleanupProduct(edge.node);
+        await cleanupProductVariants(edge.node);
       }
 
       hasNextPage = data.products.pageInfo.hasNextPage;
-      cursor = data.products.edges.at(-1)?.cursor || null;
+      cursor =
+        data.products.edges.at(-1)?.cursor || null;
     }
 
     console.log("✅ Variant cleanup completed");
-    return new Response("OK", { status: 200 });
-
+    res.status(200).send("OK");
   } catch (err) {
     console.error("🔥 Cleanup failed:", err);
-    return new Response("Cleanup failed", { status: 500 });
+    res.status(500).send("Cleanup failed");
   }
 }
