@@ -1,0 +1,14 @@
+name: Variant Cleanup
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger cleanup endpoint
+        run: |
+          curl -X GET https://shopify-custom-price.vercel.app/api/cleanup-variants
