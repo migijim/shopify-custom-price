@@ -130,10 +130,36 @@ async function cleanupProductVariants(product) {
 
   console.log(`🗑 Deleting ${idsToDelete.length} variants:`, idsToDelete);
 
+  // const result = await shopifyFetch(
+  //   `
+  //   mutation ($ids: [ID!]!) {
+  //     productVariantBulkDelete(ids: $ids) {
+  //       deletedProductVariantIds
+  //       userErrors {
+  //         field
+  //         message
+  //       }
+  //     }
+  //   }
+  //   `,
+  //   { ids: idsToDelete }
+  // );
+
+  // const errors = result.productVariantBulkDelete.userErrors;
+  // if (errors.length > 0) {
+  //   console.error("❌ Bulk delete errors:", errors);
+  //   throw new Error("Bulk variant delete failed");
+  // }
+
+  // console.log(
+  //   "✅ Deleted variants:",
+  //   result.productVariantBulkDelete.deletedProductVariantIds
+  // );
+
   const result = await shopifyFetch(
     `
-    mutation ($ids: [ID!]!) {
-      productVariantBulkDelete(ids: $ids) {
+    mutation ($variantIds: [ID!]!) {
+      productVariantsDelete(variantIds: $variantIds) {
         deletedProductVariantIds
         userErrors {
           field
@@ -142,10 +168,10 @@ async function cleanupProductVariants(product) {
       }
     }
     `,
-    { ids: idsToDelete }
+    { variantIds: idsToDelete }
   );
 
-  const errors = result.productVariantBulkDelete.userErrors;
+  const errors = result.productVariantsDelete.userErrors;
   if (errors.length > 0) {
     console.error("❌ Bulk delete errors:", errors);
     throw new Error("Bulk variant delete failed");
@@ -153,7 +179,7 @@ async function cleanupProductVariants(product) {
 
   console.log(
     "✅ Deleted variants:",
-    result.productVariantBulkDelete.deletedProductVariantIds
+    result.productVariantsDelete.deletedProductVariantIds
   );
 }
 
