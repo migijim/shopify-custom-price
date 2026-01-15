@@ -191,37 +191,147 @@ export default async function handler(req, res) {
         const quantity = item.quantity;
 
         console.log(
-          `📦 Processing item ${item.id} | product ${item.product_id} | qty ${quantity}`
+          `📦 Processing item ${item.id} | variant ${item.variant_id} | product ${item.product_id} | qty ${quantity}`
         );
 
-        // Fetch ORIGINAL product inventory item
-        const productData = await shopifyFetch(
-          `
-          query ($id: ID!) {
-            product(id: $id) {
-              variants(first: 1) {
-                edges {
-                  node {
-                    inventoryItem {
-                      id
+        // -----------------------------
+        // Get starter variant ID from variant metafield or line item property
+        // -----------------------------
+        let starterVariantId = null;
+        
+        // Method 1: Try to get from variant metafield (preferred)
+        try {
+          const variantData = await shopifyFetch(
+            `
+            query ($id: ID!) {
+              productVariant(id: $id) {
+                metafield(namespace: "custom_price_app", key: "starter_variant_id") {
+                  value
+                }
+              }
+            }
+            `,
+            { id: `gid://shopify/ProductVariant/${item.variant_id}` }
+          );
+
+          if (variantData.productVariant?.metafield?.value) {
+            starterVariantId = variantData.productVariant.metafield.value;
+            console.log(`✅ Found starter variant ID from metafield: ${starterVariantId}`);
+          }
+        } catch (err) {
+          console.warn("⚠️ Could not fetch variant metafield:", err.message);
+        }
+
+        // Method 2: Fallback to line item property (for backward compatibility)
+        if (!starterVariantId && Array.isArray(item.properties)) {
+          const starterProp = item.properties.find(
+            p => p.name === "_starter_variant_id" || p.name === "starter_variant_id"
+          );
+          if (starterProp) {
+            // Extract numeric ID from GID if needed
+            starterVariantId = starterProp.value.replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+            console.log(`✅ Found starter variant ID from line item property: ${starterVariantId}`);
+          }
+        }
+
+        // Method 3: Fallback to first variant (backward compatibility for old orders)
+        if (!starterVariantId) {
+          console.warn("⚠️ No starter variant ID found, falling back to first variant");
+          const productData = await shopifyFetch(
+            `
+            query ($id: ID!) {
+              product(id: $id) {
+                variants(first: 1) {
+                  edges {
+                    node {
+                      inventoryItem {
+                        id
+                      }
                     }
                   }
                 }
               }
             }
+            `,
+            { id: `gid://shopify/Product/${item.product_id}` }
+          );
+          const originalInventoryItemId =
+            productData.product.variants.edges[0].node.inventoryItem.id;
+          
+          console.log(
+            `📉 Reducing first variant inventory ${originalInventoryItemId} by ${quantity} (fallback)`
+          );
+
+          const result = await shopifyFetch(
+            `
+            mutation ($input: InventoryAdjustQuantitiesInput!) {
+              inventoryAdjustQuantities(input: $input) {
+                inventoryAdjustmentGroup {
+                  createdAt
+                }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }
+            `,
+            {
+              input: {
+                reason: "correction",
+                name: "available",
+                changes: [
+                  {
+                    inventoryItemId: originalInventoryItemId,
+                    locationId,
+                    delta: -quantity
+                  }
+                ]
+              }
+            }
+          );
+
+          const errors = result.inventoryAdjustQuantities.userErrors;
+          if (errors.length > 0) {
+            console.error("❌ Inventory errors:", errors);
+            throw new Error("Inventory update failed");
+          }
+
+          console.log("✅ Inventory reduced successfully (fallback)");
+          continue; // Skip to next item
+        }
+
+        // -----------------------------
+        // Get inventory item ID from starter variant
+        // -----------------------------
+        const numericStarterVariantId = starterVariantId.toString();
+        const starterVariantData = await shopifyFetch(
+          `
+          query ($id: ID!) {
+            productVariant(id: $id) {
+              inventoryItem {
+                id
+              }
+            }
           }
           `,
-          { id: `gid://shopify/Product/${item.product_id}` }
+          { id: `gid://shopify/ProductVariant/${numericStarterVariantId}` }
         );
 
-        const originalInventoryItemId =
-          productData.product.variants.edges[0].node.inventoryItem.id;
+        if (!starterVariantData.productVariant?.inventoryItem?.id) {
+          console.error(`❌ Could not find inventory item for starter variant ${numericStarterVariantId}`);
+          throw new Error(`Starter variant ${numericStarterVariantId} not found`);
+        }
+
+        const starterInventoryItemId = starterVariantData.productVariant.inventoryItem.id;
 
         console.log(
-          `📉 Reducing original inventory ${originalInventoryItemId} by ${quantity}`
+          `📉 Reducing starter variant ${numericStarterVariantId} inventory ${starterInventoryItemId} by ${quantity}`
         );
 
+        // -----------------------------
         // Adjust inventory
+        // -----------------------------
         const result = await shopifyFetch(
           `
           mutation ($input: InventoryAdjustQuantitiesInput!) {
@@ -242,7 +352,7 @@ export default async function handler(req, res) {
               name: "available",
               changes: [
                 {
-                  inventoryItemId: originalInventoryItemId,
+                  inventoryItemId: starterInventoryItemId,
                   locationId,
                   delta: -quantity
                 }
@@ -251,9 +361,7 @@ export default async function handler(req, res) {
           }
         );
 
-        const errors =
-          result.inventoryAdjustQuantities.userErrors;
-
+        const errors = result.inventoryAdjustQuantities.userErrors;
         if (errors.length > 0) {
           console.error("❌ Inventory errors:", errors);
           throw new Error("Inventory update failed");

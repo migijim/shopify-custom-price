@@ -10,46 +10,108 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { productId, dimensionMm, dimensionLang } = req.body;
+    const { productId, dimensionMm, dimensionLang, selectedVariantId } = req.body;
 
     if (!productId || !dimensionMm) {
       return res.status(400).json({ error: "Missing parameters" });
     }
 
     /* --------------------------------
-       1. Read base price (GraphQL)
+       1. Read base price from SELECTED variant (or first if not provided)
     -------------------------------- */
-    const gqlResp = await fetch(
-      `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
-      {
-        method: "POST",
-        headers: {
-          "X-Shopify-Access-Token": TOKEN,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          query: `
-            query ($id: ID!) {
-              product(id: $id) {
-                variants(first: 1) {
-                  edges {
-                    node {
-                      price
+    const numericProductId = productId.split("/").pop();
+    
+    // If selectedVariantId is provided, use it; otherwise use first variant
+    let pricePerMeter;
+    let starterVariantId;
+    
+    if (selectedVariantId) {
+      // Get selected variant's price
+      const numericVariantId = selectedVariantId.toString().replace(/^gid:\/\/shopify\/ProductVariant\//, '');
+      
+      const variantResp = await fetch(
+        `https://${SHOP}/admin/api/${API_VERSION}/variants/${numericVariantId}.json`,
+        {
+          headers: {
+            "X-Shopify-Access-Token": TOKEN
+          }
+        }
+      );
+      
+      if (variantResp.ok) {
+        const variantJson = await variantResp.json();
+        pricePerMeter = parseFloat(variantJson.variant.price);
+        starterVariantId = numericVariantId;
+        console.log(`✅ Using selected variant ${starterVariantId} with price ${pricePerMeter}`);
+      } else {
+        // Fallback to first variant if selected variant not found
+        console.warn(`⚠️ Selected variant ${numericVariantId} not found, falling back to first variant`);
+        const gqlResp = await fetch(
+          `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
+          {
+            method: "POST",
+            headers: {
+              "X-Shopify-Access-Token": TOKEN,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              query: `
+                query ($id: ID!) {
+                  product(id: $id) {
+                    variants(first: 1) {
+                      edges {
+                        node {
+                          id
+                          price
+                        }
+                      }
+                    }
+                  }
+                }
+              `,
+              variables: { id: productId }
+            })
+          }
+        );
+        const gqlJson = await gqlResp.json();
+        pricePerMeter = parseFloat(gqlJson.data.product.variants.edges[0].node.price);
+        const firstVariantGid = gqlJson.data.product.variants.edges[0].node.id;
+        starterVariantId = firstVariantGid.split("/").pop();
+      }
+    } else {
+      // No selected variant provided - use first variant (backward compatibility)
+      const gqlResp = await fetch(
+        `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
+        {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": TOKEN,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            query: `
+              query ($id: ID!) {
+                product(id: $id) {
+                  variants(first: 1) {
+                    edges {
+                      node {
+                        id
+                        price
+                      }
                     }
                   }
                 }
               }
-            }
-          `,
-          variables: { id: productId }
-        })
-      }
-    );
-
-    const gqlJson = await gqlResp.json();
-    const pricePerMeter = parseFloat(
-      gqlJson.data.product.variants.edges[0].node.price
-    );
+            `,
+            variables: { id: productId }
+          })
+        }
+      );
+      const gqlJson = await gqlResp.json();
+      pricePerMeter = parseFloat(gqlJson.data.product.variants.edges[0].node.price);
+      const firstVariantGid = gqlJson.data.product.variants.edges[0].node.id;
+      starterVariantId = firstVariantGid.split("/").pop();
+    }
 
     const meters = Number(dimensionMm) / 1000;
     const unitPrice = Math.round(pricePerMeter * meters * 100) / 100;
@@ -57,8 +119,6 @@ export default async function handler(req, res) {
     /* --------------------------------
        2. Get product options (REST)
     -------------------------------- */
-    const numericProductId = productId.split("/").pop();
-
     const productResp = await fetch(
       `https://${SHOP}/admin/api/${API_VERSION}/products/${numericProductId}.json`,
       {
@@ -145,6 +205,54 @@ export default async function handler(req, res) {
     const variant = createVariantJson.variant;
 
     /* --------------------------------
+       3.5. Store starter variant ID as metafield on temporary variant
+    -------------------------------- */
+    const variantGid = `gid://shopify/ProductVariant/${variant.id}`;
+    
+    const metafieldResp = await fetch(
+      `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
+      {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": TOKEN,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          query: `
+            mutation ($input: MetafieldsSetInput!) {
+              metafieldsSet(metafields: [$input]) {
+                metafields {
+                  id
+                }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }
+          `,
+          variables: {
+            input: {
+              namespace: "custom_price_app",
+              key: "starter_variant_id",
+              value: starterVariantId.toString(),
+              type: "single_line_text_field",
+              ownerId: variantGid
+            }
+          }
+        })
+      }
+    );
+
+    const metafieldJson = await metafieldResp.json();
+    if (metafieldJson.errors || metafieldJson.data?.metafieldsSet?.userErrors?.length > 0) {
+      console.error("⚠️ Failed to set starter variant metafield:", metafieldJson.errors || metafieldJson.data.metafieldsSet.userErrors);
+      // Don't fail the request, just log the error
+    } else {
+      console.log(`✅ Stored starter variant ID ${starterVariantId} as metafield on variant ${variant.id}`);
+    }
+
+    /* --------------------------------
        4. Set inventory = 0
     -------------------------------- */
     const locationsResp = await fetch(
@@ -180,7 +288,6 @@ export default async function handler(req, res) {
     } else {
       console.warn("⚠️ No inventory locations found. Skipping inventory set.");
     }
-
 
     /* --------------------------------
        5. Success
