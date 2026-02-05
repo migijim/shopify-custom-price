@@ -1,3 +1,4 @@
+// shopify-custom-price/api/calculate-price.js
 import fetch from "node-fetch";
 
 const SHOP = process.env.SHOPIFY_SHOP;
@@ -10,13 +11,19 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { productId, dimensionMm, quantity } = req.body;
+    const { productId, mode, lengthMm, widthMm, quantity } = req.body;
 
-    if (!productId || !dimensionMm || !quantity) {
+    if (!productId || !mode || !quantity) {
       return res.status(400).json({ error: "Missing parameters" });
     }
+    if (mode === "area" && (!lengthMm || !widthMm)) {
+      return res.status(400).json({ error: "Missing length/width for area mode" });
+    }
+    if (mode !== "area" && !lengthMm && !widthMm) {
+      return res.status(400).json({ error: "Missing dimension (lengthMm or widthMm)" });
+    }
 
-    /* 1. Get base price (price per meter) */
+    /* 1. Get base price (per meter or per m²) */
     const response = await fetch(
       `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
       {
@@ -46,25 +53,41 @@ export default async function handler(req, res) {
     );
 
     const json = await response.json();
-
-    const pricePerMeter = parseFloat(
+    const pricePerUnit = parseFloat(
       json.data.product.variants.edges[0].node.price
     );
 
     /* 2. Calculate price */
-    const meters = dimensionMm / 1000;
-    const unitPrice = Math.round(pricePerMeter * meters * 100) / 100;
-    const totalPrice = Math.round(unitPrice * quantity * 100) / 100;
+    const qty = Number(quantity);
+    const lenM = lengthMm ? Number(lengthMm) / 1000 : null;
+    const widM = widthMm ? Number(widthMm) / 1000 : null;
+
+    let unitPrice;
+    let calcDetails = {};
+
+    if (mode === "area") {
+      const areaSqm = Math.max(0, (lenM || 0) * (widM || 0));
+      unitPrice = Math.round(pricePerUnit * areaSqm * 100) / 100;
+      calcDetails = { areaSqm };
+    } else {
+      const dimensionM = lenM ?? widM;
+      unitPrice = Math.round(pricePerUnit * dimensionM * 100) / 100;
+      calcDetails = { meters: dimensionM };
+    }
+
+    const totalPrice = Math.round(unitPrice * qty * 100) / 100;
 
     /* 3. Return result */
     res.status(200).json({
       product: json.data.product.title,
-      pricePerMeter,
-      dimensionMm,
-      meters,
-      quantity,
+      pricePerUnit,
+      mode,
+      lengthMm: lengthMm ?? null,
+      widthMm: widthMm ?? null,
+      quantity: qty,
       unitPrice,
-      totalPrice
+      totalPrice,
+      ...calcDetails
     });
 
   } catch (err) {
