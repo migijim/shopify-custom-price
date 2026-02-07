@@ -2,7 +2,6 @@ import fetch from "node-fetch";
 
 const SHOP = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
-// const API_VERSION = "2025-01";
 const API_VERSION = "2024-04";
 
 const MAX_VARIANTS = Number(process.env.TEMP_VARIANT_MAX_COUNT || 100);
@@ -27,7 +26,7 @@ async function shopifyFetch(query, variables = {}) {
   const json = await res.json();
 
   if (json.errors) {
-    console.error("❌ Shopify GraphQL errors:", json.errors);
+    console.error("✖ Shopify GraphQL errors:", json.errors);
     throw json.errors;
   }
 
@@ -37,11 +36,11 @@ async function shopifyFetch(query, variables = {}) {
 /* -------------------------------------------------
    Helpers
 -------------------------------------------------- */
+const tempTitleRegex =
+  /^(Length|Width)\s*\|\s*\d+\s*mm(\s*X\s*Width\s*\|\s*\d+\s*mm|\s*X\s*Length\s*\|\s*\d+\s*mm)?$/i;
+
 function isTemporaryVariant(title) {
-  return (
-    title.startsWith("Length |") ||
-    title.startsWith("Width |")
-  );
+  return tempTitleRegex.test(title);
 }
 
 function isOlderThanBuffer(createdAt) {
@@ -58,41 +57,27 @@ async function cleanupProductVariants(product) {
     .map(e => e.node)
     .filter(v => isTemporaryVariant(v.title));
 
-  if (tempVariants.length <= MAX_VARIANTS) {
-    return;
-  }
+  if (tempVariants.length <= MAX_VARIANTS) return;
 
-  console.log(
-    `🧹 Product ${product.id}: ${tempVariants.length} temporary variants`
-  );
-
-  // Filter variants that are older than buffer time
   const deletable = tempVariants
     .filter(v => isOlderThanBuffer(v.createdAt))
-    .sort(
-      (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
-    );
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
   const excessCount = tempVariants.length - MAX_VARIANTS;
   const toDelete = deletable.slice(0, excessCount);
 
   if (toDelete.length === 0) {
-    console.log("⚠️ No variants eligible for deletion yet (buffer time)");
+    console.log("⚠ No variants eligible for deletion yet (buffer time)");
     return;
   }
 
   const variantsIds = toDelete.map(v => v.id);
 
-  console.log(`🗑 Deleting ${variantsIds.length} variants:`, variantsIds);
-
   const result = await shopifyFetch(
     `
     mutation ($productId: ID!, $variantsIds: [ID!]!) {
       productVariantsBulkDelete(productId: $productId, variantsIds: $variantsIds) {
-        userErrors {
-          field
-          message
-        }
+        userErrors { field message }
       }
     }
     `,
@@ -101,15 +86,12 @@ async function cleanupProductVariants(product) {
 
   const errors = result.productVariantsBulkDelete.userErrors;
   if (errors.length > 0) {
-    console.error("❌ Bulk delete errors:", errors);
+    console.error("✖ Bulk delete errors:", errors);
     throw new Error("Bulk variant delete failed");
   }
 
-  console.log(
-    `✅ Deleted ${variantsIds.length} variants`
-  );
+  console.log(`✔ Deleted ${variantsIds.length} variants`);
 }
-
 
 /* -------------------------------------------------
    Cron handler
@@ -130,20 +112,12 @@ export default async function handler(req, res) {
               node {
                 id
                 variants(first: 250) {
-                  edges {
-                    node {
-                      id
-                      title
-                      createdAt
-                    }
-                  }
+                  edges { node { id title createdAt } }
                 }
               }
               cursor
             }
-            pageInfo {
-              hasNextPage
-            }
+            pageInfo { hasNextPage }
           }
         }
         `,
@@ -155,11 +129,10 @@ export default async function handler(req, res) {
       }
 
       hasNextPage = data.products.pageInfo.hasNextPage;
-      cursor =
-        data.products.edges.at(-1)?.cursor || null;
+      cursor = data.products.edges.at(-1)?.cursor || null;
     }
 
-    console.log("✅ Variant cleanup completed");
+    console.log("✔ Variant cleanup completed");
     res.status(200).send("OK");
   } catch (err) {
     console.error("🔥 Cleanup failed:", err);
