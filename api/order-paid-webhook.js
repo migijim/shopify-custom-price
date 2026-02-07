@@ -24,9 +24,6 @@ function verifyWebhook(rawBody, shopifyHmac) {
     .update(rawBody, "utf8")
     .digest("base64");
 
-  console.log("🔐 Shopify HMAC:", shopifyHmac);
-  console.log("🔐 Calculated HMAC:", digest);
-
   return digest === shopifyHmac;
 }
 
@@ -49,7 +46,7 @@ async function shopifyFetch(query, variables = {}) {
   const json = await res.json();
 
   if (json.errors) {
-    console.error("❌ Shopify GraphQL errors:", json.errors);
+    console.error("✖ Shopify GraphQL errors:", json.errors);
     throw json.errors;
   }
 
@@ -63,18 +60,12 @@ async function getPrimaryLocationId() {
   const data = await shopifyFetch(`
     query {
       locations(first: 1) {
-        edges {
-          node {
-            id
-          }
-        }
+        edges { node { id } }
       }
     }
   `);
 
-  const locationId = data.locations.edges[0].node.id;
-  console.log("📍 Using location:", locationId);
-  return locationId;
+  return data.locations.edges[0].node.id;
 }
 
 /* -------------------------------------------------
@@ -105,13 +96,8 @@ async function markOrderAsProcessed(orderId) {
     `
     mutation ($input: MetafieldsSetInput!) {
       metafieldsSet(metafields: [$input]) {
-        metafields {
-          id
-        }
-        userErrors {
-          field
-          message
-        }
+        metafields { id }
+        userErrors { field message }
       }
     }
     `,
@@ -128,19 +114,15 @@ async function markOrderAsProcessed(orderId) {
 
   const errors = data.metafieldsSet.userErrors;
   if (errors.length > 0) {
-    console.error("❌ Failed to mark order as processed:", errors);
+    console.error("✖ Failed to mark order as processed:", errors);
     throw new Error("Metafield write failed");
   }
-
-  console.log("✅ Order marked as processed");
 }
 
 /* -------------------------------------------------
    Webhook handler
 -------------------------------------------------- */
 export default async function handler(req, res) {
-  console.log("➡️ Order paid webhook received");
-
   let rawBody = "";
 
   req.on("data", chunk => {
@@ -150,25 +132,16 @@ export default async function handler(req, res) {
   req.on("end", async () => {
     try {
       const shopifyHmac = req.headers["x-shopify-hmac-sha256"];
-
       if (!verifyWebhook(rawBody, shopifyHmac)) {
-        console.error("❌ Webhook HMAC verification failed");
+        console.error("✖ Webhook HMAC verification failed");
         return res.status(401).send("Unauthorized");
       }
 
-      console.log("✅ Webhook verified");
-
       const order = JSON.parse(rawBody);
       const orderId = order.id;
-      console.log("🧾 Order ID:", orderId);
 
-      // -----------------------------
-      // Step 6: Idempotency check
-      // -----------------------------
-      const alreadyProcessed = await isOrderProcessed(orderId);
-
-      if (alreadyProcessed) {
-        console.log("⏭ Order already processed, skipping inventory update");
+      // Idempotency
+      if (await isOrderProcessed(orderId)) {
         return res.status(200).send("OK");
       }
 
@@ -183,23 +156,13 @@ export default async function handler(req, res) {
               p.name === "Individuelle Länge"
           );
 
-        if (!hasDimension) {
-          console.log("⏭ Skipped non-dimension item:", item.id);
-          continue;
-        }
+        if (!hasDimension) continue;
 
         const quantity = item.quantity;
 
-        console.log(
-          `📦 Processing item ${item.id} | variant ${item.variant_id} | product ${item.product_id} | qty ${quantity}`
-        );
-
-        // -----------------------------
-        // Get starter variant ID from variant metafield or line item property
-        // -----------------------------
+        // --- Starter variant lookup priority: metafield → line item prop → first variant
         let starterVariantId = null;
-        
-        // Method 1: Try to get from variant metafield (preferred)
+
         try {
           const variantData = await shopifyFetch(
             `
@@ -216,63 +179,45 @@ export default async function handler(req, res) {
 
           if (variantData.productVariant?.metafield?.value) {
             starterVariantId = variantData.productVariant.metafield.value;
-            console.log(`✅ Found starter variant ID from metafield: ${starterVariantId}`);
           }
         } catch (err) {
-          console.warn("⚠️ Could not fetch variant metafield:", err.message);
+          console.warn("⚠ Could not fetch variant metafield:", err.message);
         }
 
-        // Method 2: Fallback to line item property (for backward compatibility)
         if (!starterVariantId && Array.isArray(item.properties)) {
           const starterProp = item.properties.find(
             p => p.name === "_starter_variant_id" || p.name === "starter_variant_id"
           );
           if (starterProp) {
-            // Extract numeric ID from GID if needed
-            starterVariantId = starterProp.value.replace(/^gid:\/\/shopify\/ProductVariant\//, '');
-            console.log(`✅ Found starter variant ID from line item property: ${starterVariantId}`);
+            starterVariantId = starterProp.value.replace(
+              /^gid:\/\/shopify\/ProductVariant\//,
+              ""
+            );
           }
         }
 
-        // Method 3: Fallback to first variant (backward compatibility for old orders)
         if (!starterVariantId) {
-          console.warn("⚠️ No starter variant ID found, falling back to first variant");
           const productData = await shopifyFetch(
             `
             query ($id: ID!) {
               product(id: $id) {
                 variants(first: 1) {
-                  edges {
-                    node {
-                      inventoryItem {
-                        id
-                      }
-                    }
-                  }
+                  edges { node { inventoryItem { id } } }
                 }
               }
             }
             `,
             { id: `gid://shopify/Product/${item.product_id}` }
           );
-          const originalInventoryItemId =
-            productData.product.variants.edges[0].node.inventoryItem.id;
-          
-          console.log(
-            `📉 Reducing first variant inventory ${originalInventoryItemId} by ${quantity} (fallback)`
-          );
 
-          const result = await shopifyFetch(
+          const fallbackInventoryId =
+            productData.product.variants.edges[0].node.inventoryItem.id;
+
+          await shopifyFetch(
             `
             mutation ($input: InventoryAdjustQuantitiesInput!) {
               inventoryAdjustQuantities(input: $input) {
-                inventoryAdjustmentGroup {
-                  createdAt
-                }
-                userErrors {
-                  field
-                  message
-                }
+                userErrors { field message }
               }
             }
             `,
@@ -282,7 +227,7 @@ export default async function handler(req, res) {
                 name: "available",
                 changes: [
                   {
-                    inventoryItemId: originalInventoryItemId,
+                    inventoryItemId: fallbackInventoryId,
                     locationId,
                     delta: -quantity
                   }
@@ -291,58 +236,34 @@ export default async function handler(req, res) {
             }
           );
 
-          const errors = result.inventoryAdjustQuantities.userErrors;
-          if (errors.length > 0) {
-            console.error("❌ Inventory errors:", errors);
-            throw new Error("Inventory update failed");
-          }
-
-          console.log("✅ Inventory reduced successfully (fallback)");
-          continue; // Skip to next item
+          continue;
         }
 
-        // -----------------------------
-        // Get inventory item ID from starter variant
-        // -----------------------------
-        const numericStarterVariantId = starterVariantId.toString();
+        // Get inventory item of starter variant
         const starterVariantData = await shopifyFetch(
           `
           query ($id: ID!) {
             productVariant(id: $id) {
-              inventoryItem {
-                id
-              }
+              inventoryItem { id }
             }
           }
           `,
-          { id: `gid://shopify/ProductVariant/${numericStarterVariantId}` }
+          { id: `gid://shopify/ProductVariant/${starterVariantId}` }
         );
 
-        if (!starterVariantData.productVariant?.inventoryItem?.id) {
-          console.error(`❌ Could not find inventory item for starter variant ${numericStarterVariantId}`);
-          throw new Error(`Starter variant ${numericStarterVariantId} not found`);
+        const starterInventoryItemId =
+          starterVariantData.productVariant?.inventoryItem?.id;
+
+        if (!starterInventoryItemId) {
+          throw new Error(`Starter variant ${starterVariantId} not found`);
         }
 
-        const starterInventoryItemId = starterVariantData.productVariant.inventoryItem.id;
-
-        console.log(
-          `📉 Reducing starter variant ${numericStarterVariantId} inventory ${starterInventoryItemId} by ${quantity}`
-        );
-
-        // -----------------------------
         // Adjust inventory
-        // -----------------------------
         const result = await shopifyFetch(
           `
           mutation ($input: InventoryAdjustQuantitiesInput!) {
             inventoryAdjustQuantities(input: $input) {
-              inventoryAdjustmentGroup {
-                createdAt
-              }
-              userErrors {
-                field
-                message
-              }
+              userErrors { field message }
             }
           }
           `,
@@ -363,19 +284,12 @@ export default async function handler(req, res) {
 
         const errors = result.inventoryAdjustQuantities.userErrors;
         if (errors.length > 0) {
-          console.error("❌ Inventory errors:", errors);
+          console.error("✖ Inventory errors:", errors);
           throw new Error("Inventory update failed");
         }
-
-        console.log("✅ Inventory reduced successfully");
       }
 
-      // -----------------------------
-      // Step 6: Mark order as processed
-      // -----------------------------
       await markOrderAsProcessed(orderId);
-
-      console.log("✅ Order paid webhook completed");
       res.status(200).send("OK");
     } catch (err) {
       console.error("🔥 Webhook failure:", err);
