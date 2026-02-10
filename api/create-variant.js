@@ -10,24 +10,37 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { productId, selectedVariantId, mode, lengthMm, widthMm } = req.body;
+    const {
+      productId,
+      selectedVariantId,
+      mode,          // "length" | "width" | "area"
+      lengthMm,      // number or null
+      widthMm        // number or null
+    } = req.body;
 
     if (!productId || !mode) {
       return res.status(400).json({ error: "Missing parameters" });
     }
+
+    // Validate inputs by mode
     if (mode === "area") {
       if (!lengthMm || !widthMm) {
         return res.status(400).json({ error: "Length and width are required for area mode" });
       }
     } else if (mode === "length" || mode === "width") {
       const dim = mode === "length" ? lengthMm : widthMm;
-      if (!dim) return res.status(400).json({ error: `Missing ${mode}Mm` });
+      if (!dim) {
+        return res.status(400).json({ error: `Missing ${mode}Mm` });
+      }
     } else {
       return res.status(400).json({ error: "Invalid mode" });
     }
 
-    /* 1. Base price from selected variant (or first) */
+    /* --------------------------------
+       1. Read base price from SELECTED variant (or first if not provided)
+    -------------------------------- */
     const numericProductId = productId.split("/").pop();
+
     let pricePerUnit;
     let starterVariantId;
 
@@ -45,7 +58,12 @@ export default async function handler(req, res) {
               query ($id: ID!) {
                 product(id: $id) {
                   variants(first: 1) {
-                    edges { node { id price } }
+                    edges {
+                      node {
+                        id
+                        price
+                      }
+                    }
                   }
                 }
               }
@@ -64,22 +82,29 @@ export default async function handler(req, res) {
       const numericVariantId = selectedVariantId
         .toString()
         .replace(/^gid:\/\/shopify\/ProductVariant\//, "");
+
       const variantResp = await fetch(
         `https://${SHOP}/admin/api/${API_VERSION}/variants/${numericVariantId}.json`,
-        { headers: { "X-Shopify-Access-Token": TOKEN } }
+        {
+          headers: { "X-Shopify-Access-Token": TOKEN }
+        }
       );
+
       if (variantResp.ok) {
         const variantJson = await variantResp.json();
         pricePerUnit = parseFloat(variantJson.variant.price);
         starterVariantId = numericVariantId;
       } else {
+        console.warn(`Selected variant ${numericVariantId} not found, falling back to first variant`);
         await fetchFirstVariantPrice();
       }
     } else {
-      await fetchFirstVariantPrice();
+      await fetchFirstVariantPrice(); // backward compatibility
     }
 
-    /* 1.5 Price calc + title */
+    /* --------------------------------
+       1.5 Compute price for mode
+    -------------------------------- */
     const lenM = lengthMm ? Number(lengthMm) / 1000 : null;
     const widM = widthMm ? Number(widthMm) / 1000 : null;
 
@@ -98,11 +123,16 @@ export default async function handler(req, res) {
       variantOptionValue = `${label} | ${dimMm} mm`;
     }
 
-    /* 2. Ensure options */
+    /* --------------------------------
+       2. Get/prepare product options (REST)
+    -------------------------------- */
     const productResp = await fetch(
       `https://${SHOP}/admin/api/${API_VERSION}/products/${numericProductId}.json`,
-      { headers: { "X-Shopify-Access-Token": TOKEN } }
+      {
+        headers: { "X-Shopify-Access-Token": TOKEN }
+      }
     );
+
     const productJson = await productResp.json();
     let optionName = "Dimensions";
 
@@ -110,6 +140,7 @@ export default async function handler(req, res) {
       productJson.product.options.length === 1 &&
       productJson.product.options[0].name === "Title"
     ) {
+      // Product has Default Title only → replace option
       await fetch(
         `https://${SHOP}/admin/api/${API_VERSION}/products/${numericProductId}.json`,
         {
@@ -119,7 +150,10 @@ export default async function handler(req, res) {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            product: { id: numericProductId, options: [{ name: optionName }] }
+            product: {
+              id: numericProductId,
+              options: [{ name: optionName }]
+            }
           })
         }
       );
@@ -127,11 +161,15 @@ export default async function handler(req, res) {
       optionName = productJson.product.options[0].name;
     }
 
-    /* 2.5 Existing variant check */
+    /* --------------------------------
+       2.5. Check if variant already exists
+    -------------------------------- */
     const existingVariant = productJson.product.variants.find(
-      v => v.option1 === variantOptionValue
+      (v) => v.option1 === variantOptionValue
     );
+
     if (existingVariant) {
+      console.log("Variant already exists:", existingVariant.id);
       return res.status(200).json({
         success: true,
         variantId: existingVariant.id,
@@ -143,7 +181,9 @@ export default async function handler(req, res) {
       });
     }
 
-    /* 3. Create variant (no tracking) */
+    /* --------------------------------
+       3. Create variant (REST)
+    -------------------------------- */
     const createVariantResp = await fetch(
       `https://${SHOP}/admin/api/${API_VERSION}/products/${numericProductId}/variants.json`,
       {
@@ -156,7 +196,7 @@ export default async function handler(req, res) {
           variant: {
             option1: variantOptionValue,
             price: unitPrice,
-            inventory_management: null,   // <-- disable tracking
+            inventory_management: "shopify",
             inventory_policy: "continue"
           }
         })
@@ -164,6 +204,7 @@ export default async function handler(req, res) {
     );
 
     const createVariantJson = await createVariantResp.json();
+
     if (!createVariantResp.ok) {
       console.error("Variant REST error:", createVariantJson);
       return res.status(400).json(createVariantJson);
@@ -171,9 +212,12 @@ export default async function handler(req, res) {
 
     const variant = createVariantJson.variant;
 
-    /* 3.5 Store starter variant metafield */
+    /* --------------------------------
+       3.5. Store starter variant ID as metafield on temporary variant
+    -------------------------------- */
     const variantGid = `gid://shopify/ProductVariant/${variant.id}`;
-    await fetch(
+
+    const metafieldResp = await fetch(
       `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`,
       {
         method: "POST",
@@ -203,7 +247,53 @@ export default async function handler(req, res) {
       }
     );
 
-    /* 5. Success */
+    const metafieldJson = await metafieldResp.json();
+    if (
+      metafieldJson.errors ||
+      metafieldJson.data?.metafieldsSet?.userErrors?.length > 0
+    ) {
+      console.error("Failed to set starter variant metafield:", metafieldJson.errors || metafieldJson.data.metafieldsSet.userErrors);
+      // Do not fail request
+    }
+
+    /* --------------------------------
+       4. Set inventory = 0
+    -------------------------------- */
+    const locationsResp = await fetch(
+      `https://${SHOP}/admin/api/${API_VERSION}/locations.json`,
+      {
+        headers: { "X-Shopify-Access-Token": TOKEN }
+      }
+    );
+
+    const locationsJson = await locationsResp.json();
+    const locations = locationsJson.locations || [];
+
+    if (locations.length > 0) {
+      const locationId = locations[0].id;
+
+      await fetch(
+        `https://${SHOP}/admin/api/${API_VERSION}/inventory_levels/set.json`,
+        {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": TOKEN,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            location_id: locationId,
+            inventory_item_id: variant.inventory_item_id,
+            available: 0
+          })
+        }
+      );
+    } else {
+      console.warn("No inventory locations found. Skipping inventory set.");
+    }
+
+    /* --------------------------------
+       5. Success
+    -------------------------------- */
     res.status(200).json({
       success: true,
       variantId: variant.id,
@@ -214,6 +304,9 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error("Variant creation failed:", err);
-    res.status(500).json({ error: "Variant creation failed", details: err.message });
+    res.status(500).json({
+      error: "Variant creation failed",
+      details: err.message
+    });
   }
 }
