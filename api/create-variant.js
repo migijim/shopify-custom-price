@@ -114,12 +114,12 @@ export default async function handler(req, res) {
     if (mode === "area") {
       const areaSqM = (lenM || 0) * (widM || 0);
       unitPrice = Math.round(pricePerUnit * areaSqM * 100) / 100;
-      variantOptionValue = `Length | ${lengthMm} mm X Width | ${widthMm} mm`;
+      variantOptionValue = `Länge | ${lengthMm} mm X Breite | ${widthMm} mm`;
     } else {
       const dimMm = mode === "length" ? lengthMm : widthMm;
       const meters = Number(dimMm) / 1000;
       unitPrice = Math.round(pricePerUnit * meters * 100) / 100;
-      const label = mode === "length" ? "Length" : "Width";
+      const label = mode === "length" ? "Länge" : "Breite";
       variantOptionValue = `${label} | ${dimMm} mm`;
     }
 

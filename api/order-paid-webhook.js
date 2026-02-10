@@ -152,8 +152,8 @@ export default async function handler(req, res) {
           Array.isArray(item.properties) &&
           item.properties.some(
             p =>
-              p.name === "Individuelle Breite" ||
-              p.name === "Individuelle Länge"
+              p.name === "_Individuelle_Breite" ||
+              p.name === "_Individuelle_Länge"
           );
 
         if (!hasDimension) continue;

@@ -36,8 +36,10 @@ async function shopifyFetch(query, variables = {}) {
 /* -------------------------------------------------
    Helpers
 -------------------------------------------------- */
-const tempTitleRegex =
-  /^(Length|Width)\s*\|\s*\d+\s*mm(\s*X\s*Width\s*\|\s*\d+\s*mm|\s*X\s*Length\s*\|\s*\d+\s*mm)?$/i;
+// const tempTitleRegex =
+//   /^(Length|Width)\s*\|\s*\d+\s*mm(\s*X\s*Width\s*\|\s*\d+\s*mm|\s*X\s*Length\s*\|\s*\d+\s*mm)?$/i;
+
+const tempTitleRegex = /^(Länge|Breite|Length|Width)\s*\|\s*\d+\s*mm(\s*X\s*(Länge|Breite|Length|Width)\s*\|\s*\d+\s*mm)?$/i;
 
 function isTemporaryVariant(title) {
   return tempTitleRegex.test(title);
