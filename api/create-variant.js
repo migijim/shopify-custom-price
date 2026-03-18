@@ -43,6 +43,7 @@ export default async function handler(req, res) {
 
     let pricePerUnit;
     let starterVariantId;
+    let starterVariantSku = "";
 
     const fetchFirstVariantPrice = async () => {
       const gqlResp = await fetch(
@@ -62,6 +63,7 @@ export default async function handler(req, res) {
                       node {
                         id
                         price
+                        sku
                       }
                     }
                   }
@@ -75,6 +77,7 @@ export default async function handler(req, res) {
       const gqlJson = await gqlResp.json();
       pricePerUnit = parseFloat(gqlJson.data.product.variants.edges[0].node.price);
       const firstVariantGid = gqlJson.data.product.variants.edges[0].node.id;
+      starterVariantSku = (gqlJson.data.product.variants.edges[0].node.sku || "").trim();
       starterVariantId = firstVariantGid.split("/").pop();
     };
 
@@ -94,6 +97,7 @@ export default async function handler(req, res) {
         const variantJson = await variantResp.json();
         pricePerUnit = parseFloat(variantJson.variant.price);
         starterVariantId = numericVariantId;
+        starterVariantSku = (variantJson.variant.sku || "").trim();
       } else {
         console.warn(`Selected variant ${numericVariantId} not found, falling back to first variant`);
         await fetchFirstVariantPrice();
@@ -174,6 +178,7 @@ export default async function handler(req, res) {
         success: true,
         variantId: existingVariant.id,
         price: existingVariant.price,
+        sku: existingVariant.sku || null,
         lengthMm: lengthMm ?? null,
         widthMm: widthMm ?? null,
         mode,
@@ -211,7 +216,35 @@ export default async function handler(req, res) {
     }
 
     const variant = createVariantJson.variant;
-
+    // Build unique temp SKU: [starter SKU]-[temp variant id]
+    const baseSkuRaw = starterVariantSku || `TEMP-${numericProductId}`;
+    const baseSku = baseSkuRaw
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/[^A-Za-z0-9._-]/g, "");
+    const tempSku = `${baseSku}-${variant.id}`;
+    
+    const skuResp = await fetch(
+      `https://${SHOP}/admin/api/${API_VERSION}/variants/${variant.id}.json`,
+      {
+        method: "PUT",
+        headers: {
+          "X-Shopify-Access-Token": TOKEN,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          variant: {
+            id: variant.id,
+            sku: tempSku
+          }
+        })
+      }
+    );
+    
+    if (!skuResp.ok) {
+      const skuJson = await skuResp.json().catch(() => ({}));
+      console.error("Failed to set temp SKU:", skuJson);
+    }
     /* --------------------------------
        3.5. Store starter variant ID as metafield on temporary variant
     -------------------------------- */
@@ -298,6 +331,7 @@ export default async function handler(req, res) {
       success: true,
       variantId: variant.id,
       price: unitPrice,
+      sku: tempSku,
       lengthMm: lengthMm ?? null,
       widthMm: widthMm ?? null,
       mode
