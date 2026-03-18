@@ -4,26 +4,26 @@ const SHOP = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const API_VERSION = "2024-04";
 
-async function normalizeTempVariant(variantId) {
-  const resp = await fetch(
-    `https://${SHOP}/admin/api/${API_VERSION}/variants/${variantId}.json`,
-    {
-      method: "PUT",
-      headers: {
-        "X-Shopify-Access-Token": TOKEN,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        variant: {
-          id: variantId,
-          inventory_management: null,
-          inventory_policy: "continue"
-        }
-      })
-    }
-  );
-  if (!resp.ok) throw new Error("Failed to normalize temp variant");
-}
+// async function normalizeTempVariant(variantId) {
+//   const resp = await fetch(
+//     `https://${SHOP}/admin/api/${API_VERSION}/variants/${variantId}.json`,
+//     {
+//       method: "PUT",
+//       headers: {
+//         "X-Shopify-Access-Token": TOKEN,
+//         "Content-Type": "application/json"
+//       },
+//       body: JSON.stringify({
+//         variant: {
+//           id: variantId,
+//           inventory_management: null,
+//           inventory_policy: "continue"
+//         }
+//       })
+//     }
+//   );
+//   if (!resp.ok) throw new Error("Failed to normalize temp variant");
+// }
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -194,7 +194,7 @@ export default async function handler(req, res) {
     );
 
     if (existingVariant) {
-      await normalizeTempVariant(existingVariant.id);
+      // await normalizeTempVariant(existingVariant.id);
       console.log("Variant already exists:", existingVariant.id);
       return res.status(200).json({
         success: true,
@@ -223,7 +223,7 @@ export default async function handler(req, res) {
           variant: {
             option1: variantOptionValue,
             price: unitPrice,
-            inventory_management: null,
+            inventory_management: "shopify",
             inventory_policy: "continue"
           }
         })
@@ -238,7 +238,7 @@ export default async function handler(req, res) {
     }
 
     const variant = createVariantJson.variant;
-    await normalizeTempVariant(variant.id);
+    // await normalizeTempVariant(variant.id);
     // Build unique temp SKU: [starter SKU]-[temp variant id]
     const baseSkuRaw = starterVariantSku || `TEMP-${numericProductId}`;
     const baseSku = baseSkuRaw
@@ -315,37 +315,37 @@ export default async function handler(req, res) {
     /* --------------------------------
        4. Set inventory = 0
     -------------------------------- */
-    // const locationsResp = await fetch(
-    //   `https://${SHOP}/admin/api/${API_VERSION}/locations.json`,
-    //   {
-    //     headers: { "X-Shopify-Access-Token": TOKEN }
-    //   }
-    // );
+    const locationsResp = await fetch(
+      `https://${SHOP}/admin/api/${API_VERSION}/locations.json`,
+      {
+        headers: { "X-Shopify-Access-Token": TOKEN }
+      }
+    );
 
-    // const locationsJson = await locationsResp.json();
-    // const locations = locationsJson.locations || [];
+    const locationsJson = await locationsResp.json();
+    const locations = locationsJson.locations || [];
 
-    // if (locations.length > 0) {
-    //   const locationId = locations[0].id;
+    if (locations.length > 0) {
+      const locationId = locations[0].id;
 
-    //   await fetch(
-    //     `https://${SHOP}/admin/api/${API_VERSION}/inventory_levels/set.json`,
-    //     {
-    //       method: "POST",
-    //       headers: {
-    //         "X-Shopify-Access-Token": TOKEN,
-    //         "Content-Type": "application/json"
-    //       },
-    //       body: JSON.stringify({
-    //         location_id: locationId,
-    //         inventory_item_id: variant.inventory_item_id,
-    //         available: 0
-    //       })
-    //     }
-    //   );
-    // } else {
-    //   console.warn("No inventory locations found. Skipping inventory set.");
-    // }
+      await fetch(
+        `https://${SHOP}/admin/api/${API_VERSION}/inventory_levels/set.json`,
+        {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": TOKEN,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            location_id: locationId,
+            inventory_item_id: variant.inventory_item_id,
+            available: 0
+          })
+        }
+      );
+    } else {
+      console.warn("No inventory locations found. Skipping inventory set.");
+    }
 
     /* --------------------------------
        5. Success
