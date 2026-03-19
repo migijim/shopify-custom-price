@@ -4,27 +4,6 @@ const SHOP = process.env.SHOPIFY_SHOP;
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const API_VERSION = "2024-04";
 
-// async function normalizeTempVariant(variantId) {
-//   const resp = await fetch(
-//     `https://${SHOP}/admin/api/${API_VERSION}/variants/${variantId}.json`,
-//     {
-//       method: "PUT",
-//       headers: {
-//         "X-Shopify-Access-Token": TOKEN,
-//         "Content-Type": "application/json"
-//       },
-//       body: JSON.stringify({
-//         variant: {
-//           id: variantId,
-//           inventory_management: null,
-//           inventory_policy: "continue"
-//         }
-//       })
-//     }
-//   );
-//   if (!resp.ok) throw new Error("Failed to normalize temp variant");
-// }
-
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -194,7 +173,6 @@ export default async function handler(req, res) {
     );
 
     if (existingVariant) {
-      // await normalizeTempVariant(existingVariant.id);
       console.log("Variant already exists:", existingVariant.id);
       return res.status(200).json({
         success: true,
@@ -238,7 +216,6 @@ export default async function handler(req, res) {
     }
 
     const variant = createVariantJson.variant;
-    // await normalizeTempVariant(variant.id);
     // Build unique temp SKU: [starter SKU]-[temp variant id]
     const baseSkuRaw = starterVariantSku || `TEMP-${numericProductId}`;
     const baseSku = baseSkuRaw
